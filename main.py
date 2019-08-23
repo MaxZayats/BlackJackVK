@@ -195,8 +195,7 @@ def Hit(from_id,vk,lang,event):
         return
     PlCard,PlSumMax,PlSumMin=take_Value_DB('PlCard',from_id),take_Value_DB('PlSumMax',from_id),take_Value_DB('PlSumMin',from_id)
     #DlCard,DlSumMax,DlSumMin=take_Value_DB('DlCard',from_id),take_Value_DB('DlSumMax',from_id),take_Value_DB('DlSumMin',from_id)
-    
-    update_value_DB('doubleStatus',1,from_id)
+
 
     c=random.randint(0, len(deck)-1)
 
@@ -249,8 +248,6 @@ def Stand(from_id,vk,lang,event):
         return
     PlSumMax=take_Value_DB('PlSumMax',from_id)
     DlCard,DlSumMax,DlSumMin=take_Value_DB('DlCard',from_id),take_Value_DB('DlSumMax',from_id),take_Value_DB('DlSumMin',from_id)
-    
-    update_value_DB('doubleStatus',1,from_id)
 
     c=random.randint(0, len(deck)-1)
 
