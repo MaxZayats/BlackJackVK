@@ -7,7 +7,7 @@ import sqlite3
 import random,time
 
 
-token='b9f04afbbb5c0fdd16a40a65776069c44d0f713e8d73384471b2c6510b5cf7bd10d28fc19e412b9ad4975'
+token=''
 #Group longpoll token
 vk_session = vk_api.VkApi(token=token)
 longpoll = VkBotLongPoll(vk_session, '185605972') # 185605972 - GroupID
