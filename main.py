@@ -1,441 +1,288 @@
-# -*- coding: utf-8 -*- 
 import vk_api
 from vk_api.bot_longpoll import VkBotLongPoll, VkBotEventType
 from vk_api.keyboard import VkKeyboard
 from vk_api.keyboard import VkKeyboardColor
 import sqlite3
-import random,time
+import random
+from scripts import game
 
 
-token=''
-#Group longpoll token
+token='b9f04afbbb5c0fdd16a40a65776069c44d0f713e8d73384471b2c6510b5cf7bd10d28fc19e412b9ad4975' #Group longpoll token
 vk_session = vk_api.VkApi(token=token)
+
 longpoll = VkBotLongPoll(vk_session, '185605972') # 185605972 - GroupID
 vk = vk_session.get_api()
 
+players={}
 
 conn = sqlite3.connect("mainDB.db") # mainDB.db - name of the DB file
 cursor = conn.cursor()
-try:
-    cursor.execute('''
-    CREATE TABLE "main" (
-	"id"	INTEGER,
-	"PlCard"	INTEGER,
-	"PlSumMax"	INTEGER,
-	"PlSumMin"	INTEGER,
-	"DlCard"	INTEGER,
-	"DlSumMax"	INTEGER,
-	"DlSumMin"	INTEGER,
-	"Lang"	INTEGER,
-	"Score"	INTEGER,
-	"gameStatus"	INTEGER,
-	"doubleStatus"	INTEGER
-    ); ''')
-#lang: 0-RU 1-EN
-except:
+
+NUM_OF_GAMES_TO_SHFL = 15 # количество игр для перетасовки
+
+
+def create_keyboard(key):
+    keyboard = VkKeyboard(one_time=False)
+    if key == 'Меню':
+        keyboard.add_button('Раздать Карты', payload='1', color=VkKeyboardColor.POSITIVE)
+        keyboard.add_line()
+        keyboard.add_button('Правила', payload='2', color=VkKeyboardColor.DEFAULT)
+        keyboard.add_line()
+        keyboard.add_button('Список Лидеров', payload='2', color=VkKeyboardColor.DEFAULT)
+        return keyboard.get_keyboard()
+    elif key == 'Раздать Карты':    
+        keyboard.add_button('Ещё', payload='1', color=VkKeyboardColor.POSITIVE)
+        keyboard.add_button('Хватит', payload='1', color=VkKeyboardColor.POSITIVE)
+        keyboard.add_line()
+        keyboard.add_button('Удвоить Ставку', payload='1', color=VkKeyboardColor.PRIMARY)
+        keyboard.add_line()
+        keyboard.add_button('Главное Меню(Сдаться)', payload='1', color=VkKeyboardColor.NEGATIVE)
+        return keyboard.get_keyboard()
+    elif key == 'Ещё' or key == 'Хватит' or key == 'Удвоить Ставку':
+        keyboard.add_button('Ещё', payload='1', color=VkKeyboardColor.POSITIVE)
+        keyboard.add_button('Хватит', payload='1', color=VkKeyboardColor.POSITIVE)
+        keyboard.add_line()
+        keyboard.add_button('Главное Меню(Сдаться)', payload='1', color=VkKeyboardColor.NEGATIVE)
+        return keyboard.get_keyboard()
+    elif key == 'empty':
+        return '{"buttons":[],"one_time":true}'
+
+
+def first_hand(user_id,peer_id):
+    players[user_id].get_first_hand()
+
+    vk.messages.send(peer_id=peer_id,
+        message=f"Ваши карты: {' '.join(players[user_id].player_hand)} | Cумма: {str(players[user_id].player_sum) + players[user_id].second_pl_sum}\n"+
+                f"Карты дилера: {' '.join(players[user_id].dealer_hand)} | Сумма: {str(players[user_id].dealer_sum) + players[user_id].second_dl_sum}",
+        keyboard=create_keyboard('Раздать Карты'), random_id=0)
+
+    if players[user_id].player_sum == 21:
+        vk.messages.send(peer_id=peer_id, message='BLACKJACK!\nВы выиграли!', keyboard=create_keyboard('Меню'), random_id=0)
+        players[user_id].close_game()
+        update_score(user_id, 1)
+    else:
+        vk.messages.send(peer_id=peer_id, message='Ещё карту ?', random_id=0)
+
+
+def more(user_id,peer_id):
+    players[user_id].get_cards('player', 1) # Get card for player
+
+    vk.messages.send(peer_id=peer_id, message=f'Вы получаете: {players[user_id].player_hand[-1]}',
+        keyboard=create_keyboard('Ещё'), random_id=0)
+
+    vk.messages.send(peer_id=peer_id,
+        message=f"Ваши карты: {' '.join(players[user_id].player_hand)} | Cумма: {str(players[user_id].player_sum) + players[user_id].second_pl_sum}\n"+
+                f"Карты дилера: {' '.join(players[user_id].dealer_hand)} | Сумма: {str(players[user_id].dealer_sum) + players[user_id].second_dl_sum}",
+        random_id=0)
+    
+    if players[user_id].player_sum > 21:
+        vk.messages.send(peer_id=peer_id, message='Вы набрали больше 21 очка.\nВы проиграли.',
+            keyboard=create_keyboard('Меню'), random_id=0)
+        players[user_id].close_game()
+        update_score(user_id, -1)
+    elif players[user_id].player_sum == 21:
+        vk.messages.send(peer_id=peer_id, message='Вы набрали 21 очко.\nДилер берёт карты...', random_id=0)      
+        stand(user_id,peer_id)
+    else: # If player has less than 21
+        vk.messages.send(peer_id=peer_id, message='Ещё карту ?', random_id=0)
+
+
+def stand(user_id,peer_id):
+    while True:
+        players[user_id].get_cards('dealer', 1) # Get card for player dealer
+
+        vk.messages.send(peer_id=peer_id, message=f'Дилер получает: {players[user_id].dealer_hand[-1]}',
+            keyboard=create_keyboard('Хватит'), random_id=0)
+
+        if players[user_id].dealer_sum > 21:
+            vk.messages.send(peer_id=peer_id,
+                message=f"Ваши карты: {' '.join(players[user_id].player_hand)} | Cумма: {str(players[user_id].player_sum)}\n"+
+                        f"Карты дилера: {' '.join(players[user_id].dealer_hand)} | Сумма: {str(players[user_id].dealer_sum)}",
+                random_id=0)
+            vk.messages.send(peer_id=peer_id, message='Дилер набрал больше 21 очка.\nВы выиграли!',
+                keyboard=create_keyboard('Меню'), random_id=0)
+            players[user_id].close_game()
+            update_score(user_id, 1)
+            return
+
+        if players[user_id].dealer_sum >= 17:
+            vk.messages.send(peer_id=peer_id,
+                message=f"Ваши карты: {' '.join(players[user_id].player_hand)} | Cумма: {str(players[user_id].player_sum)}\n"+
+                        f"Карты дилера: {' '.join(players[user_id].dealer_hand)} | Сумма: {str(players[user_id].dealer_sum)}",
+                random_id=0)
+            break
+    
+    if players[user_id].dealer_sum < players[user_id].player_sum:
+        vk.messages.send(peer_id=peer_id, message='Вы набрали больше чем дилер.\nВы выиграли!',
+            keyboard=create_keyboard('Меню'), random_id=0)
+        update_score(user_id, 1)
+    elif players[user_id].dealer_sum > players[user_id].player_sum:
+        vk.messages.send(peer_id=peer_id, message='Дилер набрал больше вас.\nВы проиграли!',
+            keyboard=create_keyboard('Меню'), random_id=0)
+        update_score(user_id, -1)
+    elif players[user_id].dealer_sum == players[user_id].player_sum:
+        vk.messages.send(peer_id=peer_id, message='Дилер набрал такое же количество очков, что и вы.\nНичья!',
+            keyboard=create_keyboard('Меню'), random_id=0)
+    
+    players[user_id].close_game()
+
+
+def double(user_id,peer_id):
+    vk.messages.send(peer_id=peer_id, message='Ставка удвоена !', random_id=0)
+
+    players[user_id].get_cards('player', 1)
+    
+    vk.messages.send(peer_id=peer_id, message=f'Вы получаете: {players[user_id].player_hand[-1]}',
+        keyboard=create_keyboard('Удвоить Ставку'), random_id=0)
+
+    vk.messages.send(peer_id=peer_id,
+        message=f"Ваши карты: {' '.join(players[user_id].player_hand)} | Cумма: {str(players[user_id].player_sum)}\n"+
+                f"Карты дилера: {' '.join(players[user_id].dealer_hand)} | Сумма: {str(players[user_id].dealer_sum) + players[user_id].second_dl_sum}",
+        random_id=0)
+
+    if players[user_id].player_sum > 21:
+        vk.messages.send(peer_id=peer_id, message='Вы набрали больше 21 очка.\nВы проиграли.', keyboard=create_keyboard('Меню'), random_id=0)
+        players[user_id].close_game()
+        update_score(user_id, -2)
+        return
+
+    #Like stand() func
+    while True:
+        players[user_id].get_cards('dealer', 1)
+
+        vk.messages.send(peer_id=peer_id, message=f'Дилер получает: {players[user_id].dealer_hand[-1]}', random_id=0)
+        if players[user_id].dealer_sum >= 17:
+            vk.messages.send(peer_id=peer_id,
+                message=f"Ваши карты: {' '.join(players[user_id].player_hand)} | Cумма: {str(players[user_id].player_sum)}\n"+
+                        f"Карты дилера: {' '.join(players[user_id].dealer_hand)} | Сумма: {str(players[user_id].dealer_sum)}",
+                random_id=0)
+            break
+    
+    if players[user_id].dealer_sum > 21:
+        vk.messages.send(peer_id=peer_id, message='Дилер набрал больше 21 очка.\nВы выиграли!', keyboard=create_keyboard('Меню'), random_id=0)
+        update_score(user_id, 2)
+    elif players[user_id].dealer_sum < players[user_id].player_sum:
+        vk.messages.send(peer_id=peer_id, message='Вы набрали больше чем дилер.\nВы выиграли!', keyboard=create_keyboard('Меню'), random_id=0)
+        update_score(user_id, 2)
+    elif players[user_id].dealer_sum > players[user_id].player_sum:
+        vk.messages.send(peer_id=peer_id, message='Дилер набрал больше вас.\nВы проиграли!', keyboard=create_keyboard('Меню'), random_id=0)
+        update_score(user_id, -2)
+    elif players[user_id].dealer_sum == players[user_id].player_sum:
+        vk.messages.send(peer_id=peer_id, message='Дилер набрал такое же количество очков, что и вы.\nНичья!', keyboard=create_keyboard('Меню'), random_id=0)
+
+    players[user_id].close_game()
+
+
+def split():
     pass
 
-number_of_deck=4
-deck = [
-    ['2 ♣',2],['2 ♠',2],['2 ❤',2],['2 ♦',2],
-    ['3 ♣',3],['3 ♠',3],['3 ❤',3],['3 ♦',3],
-    ['4 ♣',4],['4 ♠',4],['4 ❤',4],['4 ♦',4],
-    ['5 ♣',5],['5 ♠',5],['5 ❤',5],['5 ♦',5],
-    ['6 ♣',6],['6 ♠',6],['6 ❤',6],['6 ♦',6],
-    ['7 ♣',7],['7 ♠',7],['7 ❤',7],['7 ♦',7],
-    ['8 ♣',8],['8 ♠',8],['8 ❤',8],['8 ♦',8],
-    ['9 ♣',9],['9 ♠',9],['9 ❤',9],['9 ♦',9],
-    ['10 ♣',10],['10 ♠',10],['10 ❤',10],['10 ♦',10],
-    ['J ♣',10],['J ♠',10],['J ❤',10],['J ♦',10],
-    ['Q ♣',10],['Q ♠',10],['Q ❤',10],['Q ♦',10],
-    ['K ♣',10],['K ♠',10],['K ❤',10],['K ♦',10],
-    ['A ♣',11],['A ♠',11],['A ❤',11],['A ♦',11],
-]*number_of_deck
 
-def update_value_DB(var,value,from_id):
-    cursor.execute('SELECT * FROM main')
-    cursor.execute('UPDATE main SET '+str(var)+' = ? WHERE id= ?', (value, from_id,))
+def update_score(user_id, value):
+    row = cursor.execute('SELECT * FROM score WHERE id = ?', (user_id,)).fetchone()
+    if row:
+        cursor.execute('UPDATE score SET score = score + ? WHERE id = ?', (value, user_id,))
+    else:
+        name = vk.users.get(user_ids=user_id)[0]
+        name = name['first_name'] +' '+ name['last_name']
+        cursor.execute('INSERT INTO score (id, name, score) values(?,?,?)', (user_id, name, value))
     conn.commit()
 
-def take_Value_DB(var,from_id):
-    try:
-        [x], = cursor.execute('select '+str(var)+' from main where id=?', (from_id,))
-        return x
-    except:
-        return None    
 
-def addNewIdDB(from_id):
-    if take_Value_DB('id',from_id)==None:
-        cursor.execute('SELECT * FROM main')
-        cursor.execute('''INSERT INTO main (id,PlCard,PlSumMax,PlSumMin,DlCard,DlSumMax,DlSumMin,Lang,Score,gameStatus,doubleStatus)
-                      values (?,?,?,?,?,?,?,?,?,?,?)''', (from_id, '0','0','0','0','0','0','0','0','0','0')) 
-        conn.commit()
-    else:
-        pass
-
-def lose_message(vk,event,lang,from_id):
-    #PlCard,PlSumMax,PlSumMin=take_Value_DB('PlCard',from_id),take_Value_DB('PlSumMax',from_id),take_Value_DB('PlSumMin',from_id)
-    #DlCard,DlSumMax,DlSumMin=take_Value_DB('DlCard',from_id),take_Value_DB('DlSumMax',from_id),take_Value_DB('DlSumMin',from_id)
-    Score=take_Value_DB('Score',from_id)
-    if take_Value_DB('doubleStatus',from_id)==1:
-        Score=Score-2
-    else:
-        Score=Score-1
-    update_value_DB('Score',Score,from_id)
-    update_value_DB('gameStatus',0,from_id)
-    update_value_DB('doubleStatus',0,from_id)
-    if lang==0:
-        vk.messages.send(peer_id=event.object.peer_id, message='Вы проиграли!',
-                                    keyboard=create_keyboard('Главное меню(Сдаться)',from_id), random_id=0)
-    elif lang==1:
-        vk.messages.send(peer_id=event.object.peer_id, message='You lost!',
-                                    keyboard=create_keyboard('Главное меню(Сдаться)',from_id), random_id=0)
-
-def win_message(vk,event,lang,from_id):
-    #PlCard,PlSumMax,PlSumMin=take_Value_DB('PlCard',from_id),take_Value_DB('PlSumMax',from_id),take_Value_DB('PlSumMin',from_id)
-    #DlCard,DlSumMax,DlSumMin=take_Value_DB('DlCard',from_id),take_Value_DB('DlSumMax',from_id),take_Value_DB('DlSumMin',from_id)
-    Score=take_Value_DB('Score',from_id)
-    if take_Value_DB('doubleStatus',from_id)==1:
-        Score=Score+2
-    else:
-        Score=Score+1
-    update_value_DB('Score',Score,from_id)
-    update_value_DB('gameStatus',0,from_id)
-    update_value_DB('doubleStatus',0,from_id)
-    if lang==0:
-        vk.messages.send(peer_id=event.object.peer_id, message='Вы выйграли!',
-                                     keyboard=create_keyboard('Главное меню(Сдаться)',from_id), random_id=0)
-    elif lang==1:
-        vk.messages.send(peer_id=event.object.peer_id, message='You win!',
-                                     keyboard=create_keyboard('Главное меню(Сдаться)',from_id), random_id=0)
-
-def draw_message(vk,event,lang,from_id):
-    update_value_DB('gameStatus',0,from_id)
-    update_value_DB('doubleStatus',0,from_id)
-    if lang==0:
-        vk.messages.send(peer_id=event.object.peer_id, message='Ничья!',
-                                     keyboard=create_keyboard('Главное меню(Сдаться)',from_id), random_id=0)
-    elif lang==1:
-        vk.messages.send(peer_id=event.object.peer_id, message='Push!',
-                                     keyboard=create_keyboard('Главное меню(Сдаться)',from_id), random_id=0)
+def get_leaders(user_id):
+    user_data = cursor.execute('SELECT * FROM score WHERE id = ?',(user_id,)).fetchone()
+    if user_data == None:
+        name = vk.users.get(user_ids=user_id)[0]
+        name = name['first_name'] +' '+ name['last_name']
+        cursor.execute('INSERT INTO score (id, name, score) values(?,?,?)', (user_id, name, 0))
+        user_data = (str(user_id), name, 0)
     
-def info_message(vk,event,lang,from_id):
-    PlCard,PlSumMax,PlSumMin=take_Value_DB('PlCard',from_id),take_Value_DB('PlSumMax',from_id),take_Value_DB('PlSumMin',from_id)
-    DlCard,DlSumMax=take_Value_DB('DlCard',from_id),take_Value_DB('DlSumMax',from_id)
-    if lang==0:
-        vk.messages.send(peer_id=event.object.peer_id, message='Ваши карты: ' + str(PlCard) + ' | Сумма: ' + str(PlSumMax) + '('+ str(PlSumMin) + ')\nКарты дилера: ' + str(DlCard) + ' | Сумма: ' + str(DlSumMax),
-                                    random_id=0)
-    elif lang==1:
-        vk.messages.send(peer_id=event.object.peer_id, message='Your card: ' + str(PlCard) + ' | Amount: ' + str(PlSumMax) + '('+ str(PlSumMin) + ")\nThe dealer's cards: " + str(DlCard) + ' | Amount: ' + str(DlSumMax),
-                                   random_id=0)
-
-def first_hand(from_id,vk,lang,event):
-    update_value_DB('gameStatus','1',from_id)
+    top_players_data = cursor.execute('SELECT * FROM score ORDER BY score DESC').fetchall()
+    user_place = top_players_data.index(user_data) + 1
+    text = ''
+    place = 1
+    for top_player_data in top_players_data[0:10]:
+        text += f'{place}. {top_player_data[1]} | Очков: {top_player_data[2]}\n'
+        place += 1
+    text += f'\nВы:\n{user_place}. {user_data[1]} | Очков: {user_data[2]}'
     
-    c1,c2,c3=(random.randint(0, len(deck)-1)),(random.randint(0, len(deck)-1)),(random.randint(0, len(deck)-1))
+    return text
 
-    PlCard=deck[c1][0]+' '+deck[c2][0]
-    PlSumMax=deck[c1][1]+deck[c2][1]
-    if (deck[c1][1]==11) or (deck[c2][1]==11):
-        if (PlSumMax)>21: # two ACE
-            PlSumMax=12
-            PlSumMin=2
-        else:
-            PlSumMin=PlSumMax-10    
-    else:
-        PlSumMin=PlSumMax
-
-    DlCard=deck[c3][0]
-    DlSumMax=deck[c3][1]
-    if deck[c3][1]==11:
-        DlSumMin=DlSumMax-10
-    else:
-        DlSumMin=DlSumMax
-
-    update_value_DB('PlCard',PlCard,from_id)
-    update_value_DB('PlSumMax',PlSumMax,from_id)
-    update_value_DB('PlSumMin',PlSumMin,from_id)
-    update_value_DB('DlCard',DlCard,from_id)
-    update_value_DB('DlSumMax',DlSumMax,from_id)
-    update_value_DB('DlSumMin',DlSumMin,from_id)
-
-    info_message(vk,event,lang,from_id)
-
-    if PlSumMax==21:
-        vk.messages.send(peer_id=event.object.peer_id, message='BLACKJACK!',
-                                  keyboard=create_keyboard('Главное меню(Сдаться)',from_id),random_id=0)
-        win_message(vk,event,lang,from_id)
-        return
-    send_message(msg[2][lang],event) # Ещё карту ?    
-
-def Double(from_id,vk,lang,event):
-    gameStatus=take_Value_DB('gameStatus',from_id)
-    if gameStatus==0:
-        vk.messages.send(peer_id=event.object.peer_id, message=msg[3][lang],
-                                    random_id=0)
-        return
-    doubleStatus=take_Value_DB('doubleStatus',from_id)
-    if doubleStatus==1:
-        vk.messages.send(peer_id=event.object.peer_id, message=msg[9][lang],
-                                    random_id=0)
-        return
-    update_value_DB('doubleStatus',1,from_id)
-    Hit(from_id,vk,lang,event)
-    if take_Value_DB('gameStatus',from_id)==1:
-        Stand(from_id,vk,lang,event)
-    else:
-        pass    
-    
-def Hit(from_id,vk,lang,event):
-    
-    gameStatus=take_Value_DB('gameStatus',from_id)
-    if gameStatus==0:
-        vk.messages.send(peer_id=event.object.peer_id, message=msg[3][lang],
-                                    random_id=0)
-        return
-    PlCard,PlSumMax,PlSumMin=take_Value_DB('PlCard',from_id),take_Value_DB('PlSumMax',from_id),take_Value_DB('PlSumMin',from_id)
-    #DlCard,DlSumMax,DlSumMin=take_Value_DB('DlCard',from_id),take_Value_DB('DlSumMax',from_id),take_Value_DB('DlSumMin',from_id)
-
-
-    c=random.randint(0, len(deck)-1)
-
-    PlCard=PlCard+' '+deck[c][0]
-
-    if lang==0:
-        vk.messages.send(peer_id=event.object.peer_id, message='Вы получаете: ' + str(deck[c][0]),
-                                   keyboard=create_keyboard('without double',from_id),random_id=0)
-    elif lang==1:
-        vk.messages.send(peer_id=event.object.peer_id, message='You get: ' + str(deck[c][0]),
-                                    keyboard=create_keyboard('without double',from_id),random_id=0)
-
-    if deck[c][1]==11:
-        if (PlSumMax+11)>21:
-            PlSumMax+=1
-            PlSumMin+=1
-        else:
-            PlSumMax+=11
-            PlSumMin+=1
-    else:
-        PlSumMax+=deck[c][1]
-        PlSumMin+=deck[c][1]          
-
-    
-    if PlSumMax>21:
-        if PlSumMin<=21:
-            PlSumMax=PlSumMin
-        else:
-            #gg
-            update_value_DB('PlCard',PlCard,from_id)
-            update_value_DB('PlSumMax',PlSumMax,from_id)
-            update_value_DB('PlSumMin',PlSumMin,from_id)
-            info_message(vk,event,lang,from_id)
-
-            lose_message(vk,event,lang,from_id)
-            vk.messages.send(peer_id=event.object.peer_id, message=msg[4][lang],
-                                    random_id=0)
-            return
-
-    update_value_DB('PlCard',PlCard,from_id)
-    update_value_DB('PlSumMax',PlSumMax,from_id)
-    update_value_DB('PlSumMin',PlSumMin,from_id)
-    info_message(vk,event,lang,from_id)
-
-def Stand(from_id,vk,lang,event):
-    gameStatus=take_Value_DB('gameStatus',from_id)
-    if gameStatus==0:
-        vk.messages.send(peer_id=event.object.peer_id, message=msg[3][lang],
-                                    random_id=0)
-        return
-    PlSumMax=take_Value_DB('PlSumMax',from_id)
-    DlCard,DlSumMax,DlSumMin=take_Value_DB('DlCard',from_id),take_Value_DB('DlSumMax',from_id),take_Value_DB('DlSumMin',from_id)
-
-    c=random.randint(0, len(deck)-1)
-
-    if lang==0:
-        vk.messages.send(peer_id=event.object.peer_id, message='Дилер получает: ' + str(deck[c][0]),
-                                    random_id=0)
-    elif lang==1:
-        vk.messages.send(peer_id=event.object.peer_id, message='The dealer gets: ' + str(deck[c][0]),
-                                    random_id=0)
-
-    
-    DlCard=DlCard + ' ' + deck[c][0]
-    
-    if deck[c][1]==11:
-        if (DlSumMax+11)>21:
-            DlSumMax=DlSumMax+1
-            DlSumMin=DlSumMin+1
-        else:
-            DlSumMax=DlSumMax+11
-            DlSumMin=DlSumMin+1
-    else:
-        DlSumMax=DlSumMax+deck[c][1]
-        DlSumMin=DlSumMin+deck[c][1]  
-
-    update_value_DB('DlSumMax',DlSumMax,from_id)
-    update_value_DB('DlSumMin',DlSumMin,from_id)
-    update_value_DB('DlCard',DlCard,from_id)
-    #info_message(vk,event,lang,from_id)
-
-    if DlSumMax>21:
-        if DlSumMin<=21:
-            DlSumMax=DlSumMin
-
-            update_value_DB('DlSumMax',DlSumMax,from_id)
-            info_message(vk,event,lang,from_id)
-        else:
-            info_message(vk,event,lang,from_id)
-            win_message(vk,event,lang,from_id)
-            vk.messages.send(peer_id=event.object.peer_id, message=msg[5][lang],
-                                    random_id=0)
-            return
-
-    if DlSumMax>PlSumMax:
-        info_message(vk,event,lang,from_id)
-        lose_message(vk,event,lang,from_id)
-        vk.messages.send(peer_id=event.object.peer_id, message=msg[6][lang],
-                                random_id=0)
-        return
-
-    if DlSumMax>16:
-        if DlSumMax==PlSumMax:
-            info_message(vk,event,lang,from_id)
-            draw_message(vk,event,lang,from_id)   
-            return
-        elif DlSumMax<PlSumMax:
-            info_message(vk,event,lang,from_id)
-            win_message(vk,event,lang,from_id)
-            vk.messages.send(peer_id=event.object.peer_id, message=msg[7][lang],
-                                    random_id=0)
-            return       
-    Stand(from_id,vk,lang,event)
-
-keymsg=[
-    ['Раздать карты','Deal'],#0
-    ['Правила','Rules'],#1
-    ['Счёт','Score'],#2
-    ['Изменить язык','Change language'],#3
-    ['Ещё','Hit'],#4
-    ['Хватит','Stand'],#5
-    ['Играть снова','Play again'],#6
-    ['Главное меню(Сдаться)','Main menu(Surrender)'],#7
-    ['Удвоить ставку','Double']#8
-]
-
-def create_keyboard(request,from_id):
-    keyboard = VkKeyboard(one_time=False)
-    lang = take_Value_DB('Lang',from_id)
-    if (request == "Начать") or (request == 'Start') or (request == "начать") or (request == "start") or (request == "Изменить язык") or (request == "Change language"):
-        keyboard.add_button('Русский', color=VkKeyboardColor.DEFAULT)
-        keyboard.add_line()
-        keyboard.add_button('English', color=VkKeyboardColor.DEFAULT)
-        keyboard = keyboard.get_keyboard()
-        return keyboard
-    elif (request == 'Русский') or (request == 'English') or (request == 'Главное меню(Сдаться)') or (request == 'Main menu(Surrender)'):
-        keyboard.add_button(keymsg[0][lang], color=VkKeyboardColor.POSITIVE) #['Раздать карты'','Deal'],
-        keyboard.add_line()
-        keyboard.add_button(keymsg[1][lang], color=VkKeyboardColor.DEFAULT) #['Правила','Rules'],
-        keyboard.add_line()
-        keyboard.add_button(keymsg[2][lang], color=VkKeyboardColor.DEFAULT) #['Счёт','Score'],
-        keyboard.add_button(keymsg[3][lang], color=VkKeyboardColor.DEFAULT) #['Изменить язык','Change language'],
-        keyboard = keyboard.get_keyboard()
-        return keyboard
-    elif (request == 'Раздать карты') or (request == 'Deal'):    
-        keyboard.add_button(keymsg[4][lang], color=VkKeyboardColor.POSITIVE) #['Ещё','Hit']
-        keyboard.add_button(keymsg[5][lang], color=VkKeyboardColor.POSITIVE) #['Хватит','Stand'],
-        keyboard.add_line()
-        keyboard.add_button(keymsg[8][lang], color=VkKeyboardColor.PRIMARY) #['Удвоить ставку','Double']
-        keyboard.add_line()
-        keyboard.add_button(keymsg[7][lang], color=VkKeyboardColor.NEGATIVE)#['Главное меню(Сдаться)','Main menu(Surrender)']
-        keyboard = keyboard.get_keyboard()
-        return keyboard
-    elif request == 'without double':
-        keyboard.add_button(keymsg[4][lang], color=VkKeyboardColor.POSITIVE) #['Ещё','Hit']
-        keyboard.add_button(keymsg[5][lang], color=VkKeyboardColor.POSITIVE) #['Хватит','Stand'],
-        keyboard.add_line()
-        keyboard.add_button(keymsg[7][lang], color=VkKeyboardColor.NEGATIVE)#['ГГлавное меню(Сдаться)','Main menu(Surrender)u']
-        keyboard = keyboard.get_keyboard()
-        return keyboard  
-
-rules=['''
-    Правила довольно просты.\n
-    •Вам нужно набрать больше очков чем дилер, но не больше чем 21 очко, иначе вы проиграете.\n
-    •Карты "2-10" оцениваются как своё значение. ("2" - это 2, "10" - это 10)\n
-    •Карты "J,Q,K" оцениваются как 10.\n
-    •Туз(A) оценивается как 1 или 11, в зависимости от ситуации.\n
-    •"Удвоить ставку" - ваша ставка удваивается и вы получаете карту. Больше карт в этой партии вы получить не можете.\n''',
-    '''
-    The rules are quite simple.\n
-    •You need to score more points than the dealer, but not more than 21 points, otherwise you lose.\n
-    •The cards "2-10" cards are evaluated as their value. ("2" is 2, "10" is 10)\n
-    •The cards "J,Q,K" are evaluated as 10.\n
-    •ACE(A) is rated as 1 or 11, depending on the situation.\n
-    •"Double" - your bet is doubled and you get a card. More cards in this party you can not get.\n
-    '''
-]
-        
-msg = [
-    ['Ок, начнём!','Ok, lets go!'],
-    ['Ваш счёт: ','Your score: '],
-    ['Ещё карту ?','More card ?'],
-    ['Игра не была создана, начните новую игру.','The game was not created, start a new game.'],
-    ['Вы набрали больше 21 очка.','You scored more than 21 points.'],
-    ['Дилер набрал больше 21 очка.','The dealer scored more than 21 points.'], #5
-    ['Дилер набрал больше вас.','The dealer scored more than you.'], #6
-    ['Вы набрали больше очков чем Дилер!','You scored more points than the Dealer!'],#7
-    ['Предыдущая игра не была закончена. Хотите начать новую',''],#8
-    ['Вы можете удвоить ставку только после первой раздачи!','You can double your bet only after the first hand!']#9
-]
-
-def send_message(text,event):
-    request = event.obj.text
-    from_id = event.obj.from_id
-    keyboard = create_keyboard(request,from_id)
-
-    vk.messages.send(peer_id=event.object.peer_id, message=text, keyboard=keyboard, random_id=0)
 
 def main():
     while True:
         for event in longpoll.listen():
             if event.type == VkBotEventType.MESSAGE_NEW:
-                request = event.obj.text        # Message text
-                from_id = event.obj.from_id     # User ID
-                print(from_id, request)
-                addNewIdDB(from_id) # add new user in DB
-                lang = take_Value_DB('Lang',from_id)
-                if event.from_user: # В лс боту
-                    if (request == "Начать") or (request == 'Start') or (request == "начать") or (request == "start") or (request == "Изменить язык") or (request == "Change language"):
-                        send_message('Выберите язык.\nSelect your language.',event)
+                payload = event.obj.payload
+                message = event.obj.text.title()
+                peer_id = event.object.peer_id
+                user_id = event.obj.from_id
+                if event.from_user:
 
-                    elif request == 'Русский':
-                        update_value_DB('Lang',0,from_id)
-                        #keyboard = create_keyboard(request,from_id)
-                        send_message('Начнём!',event)
-                    
-                    elif (request == 'Главное меню(Сдаться)') or (request == 'Main menu(Surrender)'):
-                        lose_message(vk,event,lang,from_id)
+                    if payload == '{"command":"start"}':
+                        vk.messages.send(peer_id=peer_id, message='Удачной игры!',
+                            keyboard=create_keyboard('Меню'), random_id=0)
 
-                    elif (request == 'English') or (request == 'Main menu(Surrender)'):
-                        update_value_DB('Lang',1,from_id)
-                        #keyboard = create_keyboard(request,from_id)
-                        send_message('Ok, lets go!',event)   
+                    elif payload == None:
+                        if message == 'Меню':
+                            vk.messages.send(peer_id=peer_id, message='Главное меню.\nУдачной игры!',
+                                keyboard=create_keyboard('Меню'), random_id=0)
+                        else:        
+                            vk.messages.send(peer_id=peer_id, message='Бот воспринимает команды только с кнопок.\n'+
+                                'Напишите "Меню" для выхода в главное меню.', random_id=0)   
 
-                    elif (request == 'Раздать карты') or (request == 'Deal') or (request == 'Играть снова') or (request == 'Play again'):
-                        first_hand(from_id,vk,lang,event)  
+                    elif payload == '1':
+                        # Перетасовываем колоду по истерчению NUM_OF_GAMES_TO_SHFL раздач, либо создаём нового пользователя
+                        try:
+                            if players[user_id].number_of_game > NUM_OF_GAMES_TO_SHFL:
+                                random.shuffle(players[user_id].deck)
+                                players[user_id].number_of_game = 0
+                                players[user_id].top_card = 0
+                                vk.messages.send(peer_id=peer_id, message='Колода была перетасована!', random_id=0)
+                        except:
+                            players.update({user_id:game.player()})
 
-                    elif (request == 'Счёт') or (request == 'Score'):
-                        send_message(f"{msg[1][lang]} {take_Value_DB('Score',from_id)}",event) 
+                        if players[user_id].game_is_open == False:
+                            if message == 'Раздать Карты':
+                                first_hand(user_id,peer_id)
+                            else:
+                                vk.messages.send(peer_id=peer_id,
+                                    message='Игра не была создана, чтобы выполнить это действие.\nНапишите "Меню" для выхода в главное меню.',
+                                    random_id=0)
 
-                    elif (request == 'Правила') or (request == 'Rules'):
-                        send_message(rules[lang],event)  
+                        elif players[user_id].game_is_open == True:
+                            if message == 'Ещё':
+                                more(user_id,peer_id)    
+                            elif message == 'Хватит':
+                                stand(user_id,peer_id) 
+                            elif message == 'Удвоить Ставку':
+                                double(user_id,peer_id) 
+                            elif message == 'Главное Меню(Сдаться)':
+                                vk.messages.send(peer_id=peer_id, message='Вы сдались!\nГлавное меню.',
+                                    keyboard=create_keyboard('Меню'), random_id=0)
+                                players[user_id].close_game()
+                                update_score(user_id, -1)
+                            else:
+                                vk.messages.send(peer_id=peer_id,
+                                    message='Игра не была создана, чтобы выполнить это действие.\nНапишите "Меню" для выхода в главное меню.',
+                                    random_id=0)
 
-                    elif (request == 'Ещё') or (request == 'Hit'):                     
-                        Hit(from_id,vk,lang,event)
+                    elif payload == '2':
+                        if message == 'Список Лидеров':
+                            vk.messages.send(peer_id=peer_id, message=f'Список лидеров:\n{get_leaders(user_id)}',
+                                random_id=0)
+                        elif message == 'Правила':
+                            vk.messages.send(peer_id=peer_id, message='Правила довольно просты.\n\n'+
+                                '•Вам нужно набрать больше очков чем дилер, но не более 21 очка, иначе вы проиграете.\n\n'+
+                                '•Карты "2-10" оцениваются как своё значение. ("2" - это 2, "10" - это 10)\n\n'+
+                                '•Карты "J,Q,K" оцениваются как 10.\n\n'+
+                                '•Туз(A) оценивается как 1 или 11, в зависимости от ситуации.\n\n'+
+                                '•"Удвоить ставку" - ваша ставка удваивается и вы получаете карту. Больше карт в этой партии вы получить не можете.',
+                            random_id=0)
 
-                    elif (request == 'Хватит') or (request == 'Stand'):    
-                        Stand(from_id,vk,lang,event)
 
-                    elif (request == 'Удвоить ставку') or (request == 'Double'):    
-                        Double(from_id,vk,lang,event)
-                    lang = take_Value_DB('Lang',from_id)
-main()
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        print(e) 
+        main()
