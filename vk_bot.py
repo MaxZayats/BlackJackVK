@@ -7,10 +7,11 @@ import random
 from scripts import game
 
 
-token='b9f04afbbb5c0fdd16a40a65776069c44d0f713e8d73384471b2c6510b5cf7bd10d28fc19e412b9ad4975' #Group longpoll token
-vk_session = vk_api.VkApi(token=token)
+token='b9f04afbbb5c0fdd16a40a65776069c44d0f713e8d73384471b2c6510b5cf7bd10d28fc19e412b9ad4975' #Group longpoll token\
+group_id = '185605972'
 
-longpoll = VkBotLongPoll(vk_session, '185605972') # 185605972 - GroupID
+vk_session = vk_api.VkApi(token=token)
+longpoll = VkBotLongPoll(vk_session, group_id)
 vk = vk_session.get_api()
 
 players={}
@@ -271,12 +272,13 @@ def main():
                             vk.messages.send(peer_id=peer_id, message=f'Список лидеров:\n{get_leaders(user_id)}',
                                 random_id=0)
                         elif message == 'Правила':
-                            vk.messages.send(peer_id=peer_id, message='Правила довольно просты.\n\n'+
-                                '•Вам нужно набрать больше очков чем дилер, но не более 21 очка, иначе вы проиграете.\n\n'+
-                                '•Карты "2-10" оцениваются как своё значение. ("2" - это 2, "10" - это 10)\n\n'+
-                                '•Карты "J,Q,K" оцениваются как 10.\n\n'+
-                                '•Туз(A) оценивается как 1 или 11, в зависимости от ситуации.\n\n'+
-                                '•"Удвоить ставку" - ваша ставка удваивается и вы получаете карту. Больше карт в этой партии вы получить не можете.',
+                            vk.messages.send(peer_id=peer_id, message='Правила довольно просты:\n\n'+
+                                '• Вам нужно набрать больше очков чем дилер, но не более 21 очка, иначе вы проиграете.\n\n'+
+                                '• Дилер обязан остановиться, как только наберёт 17 очков или выше, и обязан брать, пока не достигнет 17-ти очков.\n\n'
+                                '• Карты "2-10" оцениваются как своё значение. ("2" - это 2, "10" - это 10)\n\n'+
+                                '• Карты "J,Q,K" оцениваются как 10.\n\n'+
+                                '• Туз(A) оценивается как 1 или 11, в зависимости от ситуации.\n\n'+
+                                '• "Удвоить ставку" - ваша ставка удваивается и вы получаете карту. Больше карт в этой партии вы получить не можете.',
                             random_id=0)
 
 
@@ -284,5 +286,8 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        print(e) 
+        print(e)
+        vk_session = vk_api.VkApi(token=token)
+        longpoll = VkBotLongPoll(vk_session, group_id)
+        vk = vk_session.get_api()
         main()
