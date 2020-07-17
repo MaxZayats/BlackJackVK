@@ -83,6 +83,7 @@ class player():
         self.top_card += 1
 
     def close_game(self):
+        """Функция заканчивает текущую раздачу"""
         self.game_is_open = False
         self.player_hand = []
         self.dealer_hand = []
